@@ -4,6 +4,7 @@ import SwiftUI
 struct AccountsView: View {
     @Environment(AccountsModel.self) private var model
     @State private var editing: EditTarget?
+    @State private var resetting: Account?
 
     enum EditTarget: Identifiable {
         case new, existing(Account)
@@ -34,7 +35,7 @@ struct AccountsView: View {
                             row(account)
                         }
                     } footer: {
-                        Text("Open the Files app, tap Browse and look under Locations. If a server is missing there, tap ••• then Edit and turn it on.")
+                        Text("Open the Files app, tap Browse and look under Locations. With one server, Files calls it DAV Drive. If syncing is stuck, swipe right on the server and tap Reset Sync.")
                     }
                 }
             }
@@ -49,6 +50,17 @@ struct AccountsView: View {
                 case .new: AccountEditor(account: nil)
                 case .existing(let account): AccountEditor(account: account)
                 }
+            }
+            .confirmationDialog(
+                "Reset \(resetting?.name ?? "")?",
+                isPresented: Binding(get: { resetting != nil }, set: { if !$0 { resetting = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Reset Sync", role: .destructive) {
+                    if let account = resetting { Task { await model.resetSync(account) } }
+                }
+            } message: {
+                Text("Removes this server from Files and adds it back. Files on the server aren't touched; changes still waiting to upload and downloaded copies on this iPhone are discarded.")
             }
             .alert("Something Went Wrong", isPresented: Binding(
                 get: { model.lastError != nil },
@@ -87,9 +99,14 @@ struct AccountsView: View {
                 Task { await model.delete(account) }
             }
         }
+        .swipeActions(edge: .leading) {
+            Button("Reset Sync", systemImage: "arrow.clockwise") { resetting = account }
+                .tint(.orange)
+        }
         .contextMenu {
             Button("Open in Files", systemImage: "folder") { Task { await model.openInFiles(account) } }
             Button("Edit", systemImage: "pencil") { editing = .existing(account) }
+            Button("Reset Sync", systemImage: "arrow.clockwise") { resetting = account }
             Button("Delete", systemImage: "trash", role: .destructive) { Task { await model.delete(account) } }
         }
     }

@@ -21,12 +21,34 @@ final class AccountsModel {
             lastError = "Couldn't store the password in the Keychain (error \(status))."
         }
         await register(account)
+        await clearErrors(account)
         if let manager = NSFileProviderManager(for: domain(for: account)) {
-            // Clears a "sign in" error in Files and lists everything again.
-            try? await manager.signalErrorResolved(NSFileProviderError(.notAuthenticated))
-            try? await manager.signalEnumerator(for: .workingSet)
             try? await manager.reimportItems(below: .rootContainer)
         }
+    }
+
+    /// iOS keeps a domain paused after an error like "not authenticated" until
+    /// the app says it's resolved; say so, and have Files list everything again.
+    private func clearErrors(_ account: Account) async {
+        guard let manager = NSFileProviderManager(for: domain(for: account)) else { return }
+        for code in [NSFileProviderError.Code.notAuthenticated, .serverUnreachable, .cannotSynchronize] {
+            try? await manager.signalErrorResolved(NSFileProviderError(code))
+        }
+        try? await manager.signalEnumerator(for: .workingSet)
+        try? await manager.signalEnumerator(for: .rootContainer)
+    }
+
+    /// Removes the account from Files and adds it back, dropping whatever iOS
+    /// was stuck on (pending changes, errors, downloaded copies). The files on
+    /// the server are untouched.
+    func resetSync(_ account: Account) async {
+        do {
+            try await NSFileProviderManager.remove(domain(for: account))
+        } catch {
+            lastError = "Couldn't reset \(account.name): \(error.localizedDescription)"
+            return
+        }
+        await register(account)
     }
 
     func delete(_ account: Account) async {
@@ -51,6 +73,11 @@ final class AccountsModel {
             $0.identifier.rawValue == account.id && $0.displayName == account.name
         }) {
             await register(account)
+        }
+        // Errors from before (e.g. a server that was down) shouldn't keep
+        // syncing paused once the app is opened again.
+        for account in accounts {
+            await clearErrors(account)
         }
     }
 
