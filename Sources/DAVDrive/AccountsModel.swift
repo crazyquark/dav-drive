@@ -73,7 +73,15 @@ final class AccountsModel {
             // Adding an existing identifier updates its display name.
             try await NSFileProviderManager.add(domain(for: account))
         } catch {
-            lastError = "Couldn't add \(account.name) to Files: \(error.localizedDescription)"
+            var message = "Couldn't add \(account.name) to Files: \(error.localizedDescription)"
+            let nsError = error as NSError
+            if nsError.domain == NSFileProviderErrorDomain,
+               nsError.code == NSFileProviderError.Code.providerNotFound.rawValue {
+                // Happens when the extension isn't registered with iOS, e.g. when
+                // the app runs inside LiveContainer, which loads no extensions.
+                message += "\n\niOS can't find DAV Drive's Files extension. Install the app normally (SideStore, iLoader…), not inside LiveContainer."
+            }
+            lastError = message
         }
     }
 
