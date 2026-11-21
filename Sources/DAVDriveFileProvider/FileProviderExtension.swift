@@ -112,7 +112,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 // MKCOL on something that appeared meanwhile.
                 completionHandler(nil, [], false, NSFileProviderError(.filenameCollision))
             } catch {
-                completionHandler(nil, [], false, FileProviderErrors.map(error))
+                completionHandler(nil, [], false, await changeError(error))
             }
         }
     }
@@ -152,7 +152,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             } catch DAVError.http(status: 412) {
                 completionHandler(nil, [], false, NSFileProviderError(.filenameCollision))
             } catch {
-                completionHandler(nil, [], false, FileProviderErrors.map(error))
+                completionHandler(nil, [], false, await changeError(error))
             }
         }
     }
@@ -172,9 +172,21 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             } catch DAVError.http(status: 404) {
                 completionHandler(nil) // already gone
             } catch {
-                completionHandler(FileProviderErrors.map(error))
+                completionHandler(await changeError(error))
             }
         }
+    }
+
+    /// Servers refuse a change the account may not make with 401 or 403
+    /// (copyparty answers a rename without its "m" permission with 401). If the
+    /// login itself still works, report a permission error for this one item;
+    /// "not authenticated" would pause syncing for the whole server.
+    private func changeError(_ error: Error) async -> Error {
+        if case DAVError.http(let status) = error, status == 401 || status == 403,
+           let client = try? client(), (try? await client.stat("")) != nil {
+            return CocoaError(.fileWriteNoPermission)
+        }
+        return FileProviderErrors.map(error)
     }
 
     // MARK: Enumeration
@@ -193,11 +205,16 @@ enum FileProviderErrors {
         if error is CancellationError { return NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError) }
         switch error {
         case DAVError.http(let status):
+            // Only errors about the whole server may pause syncing; anything
+            // about one item must stay a per-item error.
             switch status {
-            case 401, 403: return NSFileProviderError(.notAuthenticated)
+            case 401: return NSFileProviderError(.notAuthenticated)
+            case 403, 423: return CocoaError(.fileWriteNoPermission)
             case 404, 409: return NSFileProviderError(.noSuchItem)
+            case 412: return NSFileProviderError(.filenameCollision)
             case 507: return NSFileProviderError(.insufficientQuota)
-            default: return NSFileProviderError(.serverUnreachable)
+            case 500...: return NSFileProviderError(.serverUnreachable)
+            default: return CocoaError(.fileWriteUnknown)
             }
         case let error as URLError:
             switch error.code {
