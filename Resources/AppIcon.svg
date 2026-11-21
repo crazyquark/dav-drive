@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2DB4A8"/>
+      <stop offset="1" stop-color="#11706F"/>
+    </linearGradient>
+    <linearGradient id="folder" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E3F3F1"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <!-- folder -->
+  <path d="M196 330 a40 40 0 0 1 40 -40 h190 l60 60 h302 a40 40 0 0 1 40 40 v330 a40 40 0 0 1 -40 40 h-552 a40 40 0 0 1 -40 -40 z"
+        fill="url(#folder)"/>
+  <!-- network: cable down to three nodes -->
+  <g stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" fill="none">
+    <line x1="512" y1="760" x2="512" y2="830"/>
+    <line x1="330" y1="830" x2="694" y2="830"/>
+  </g>
+  <g fill="#FFFFFF">
+    <circle cx="330" cy="830" r="34"/>
+    <circle cx="512" cy="830" r="34"/>
+    <circle cx="694" cy="830" r="34"/>
+  </g>
+  <!-- sync arrows on the folder -->
+  <g fill="none" stroke="#14857F" stroke-width="34" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M408 540 a110 110 0 0 1 196 -50"/>
+    <path d="M616 560 a110 110 0 0 1 -196 50"/>
+  </g>
+  <g fill="#14857F">
+    <path d="M626 440 l6 92 l-88 -26 z"/>
+    <path d="M398 660 l-6 -92 l88 26 z"/>
+  </g>
+</svg>

@@ -1,0 +1,11 @@
+version: 1
+bundleID: io.github.crazyquark.davdrive
+product: DAVDrive
+infoPath: Config/App-Info.plist
+entitlementsPath: Config/App.entitlements
+iconPath: Resources/AppIcon.png
+extensions:
+  # Bundle ID: io.github.crazyquark.davdrive.DAVDriveFileProvider
+  - product: DAVDriveFileProvider
+    infoPath: Config/FileProvider-Info.plist
+    entitlementsPath: Config/FileProvider.entitlements

@@ -1,0 +1,213 @@
+import DAVCore
+import FileProvider
+import UniformTypeIdentifiers
+
+/// One instance per domain; each domain is one account (domain ID = account ID).
+/// Info.plist names this class, so keep the Objective-C name stable.
+@objc(FileProviderExtension)
+final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
+    private let domain: NSFileProviderDomain
+    private let manager: NSFileProviderManager?
+
+    required init(domain: NSFileProviderDomain) {
+        self.domain = domain
+        manager = NSFileProviderManager(for: domain)
+        super.init()
+    }
+
+    func invalidate() {}
+
+    /// Built per call so edits to the account in the app apply right away.
+    private func client() throws -> WebDAVClient {
+        do {
+            return try AccountStore.client(forAccountID: domain.identifier.rawValue)
+        } catch {
+            throw NSFileProviderError(.notAuthenticated)
+        }
+    }
+
+    private var rootName: String { domain.displayName }
+
+    private func item(_ resource: DAVResource) -> Item { Item(resource, rootName: rootName) }
+
+    /// Runs `work` in a task tied to a cancellable Progress.
+    private func run(_ progress: Progress = Progress(totalUnitCount: 1),
+                     _ work: @escaping (Progress) async -> Void) -> Progress {
+        let task = Task {
+            await work(progress)
+            progress.completedUnitCount = progress.totalUnitCount
+        }
+        progress.cancellationHandler = { task.cancel() }
+        return progress
+    }
+
+    // MARK: Items
+
+    func item(for identifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest,
+              completionHandler: @escaping (NSFileProviderItem?, Error?) -> Void) -> Progress {
+        run { [self] _ in
+            guard let path = identifier.path else {
+                return completionHandler(nil, NSFileProviderError(.noSuchItem))
+            }
+            do {
+                var resource = try await client().stat(path)
+                resource.isDirectory = resource.isDirectory || path.isEmpty
+                completionHandler(item(resource), nil)
+            } catch {
+                completionHandler(nil, FileProviderErrors.map(error))
+            }
+        }
+    }
+
+    func fetchContents(for identifier: NSFileProviderItemIdentifier, version requestedVersion: NSFileProviderItemVersion?,
+                       request: NSFileProviderRequest,
+                       completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void) -> Progress {
+        run(Progress(totalUnitCount: 100)) { [self] progress in
+            guard let path = identifier.path, !path.isEmpty else {
+                return completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
+            }
+            do {
+                let client = try client()
+                let resource = try await client.stat(path)
+                let directory = try manager?.temporaryDirectoryURL() ?? FileManager.default.temporaryDirectory
+                let destination = directory.appending(path: UUID().uuidString)
+                try await client.download(path, to: destination, progress: progress)
+                completionHandler(destination, item(resource), nil)
+            } catch {
+                completionHandler(nil, nil, FileProviderErrors.map(error))
+            }
+        }
+    }
+
+    func createItem(basedOn template: NSFileProviderItem, fields: NSFileProviderItemFields, contents url: URL?,
+                    options: NSFileProviderCreateItemOptions = [], request: NSFileProviderRequest,
+                    completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
+    ) -> Progress {
+        run(Progress(totalUnitCount: 100)) { [self] progress in
+            guard let parent = template.parentItemIdentifier.path else {
+                // Nothing can be put in the (nonexistent) trash.
+                return completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
+            }
+            let path = Paths.join(parent, template.filename)
+            let isFolder = template.contentType == .folder
+            do {
+                let client = try client()
+                if let existing = try? await client.stat(path) {
+                    // On a re-import after a reset the item is expected to be there;
+                    // otherwise never overwrite: Files then picks a free name.
+                    guard options.contains(.mayAlreadyExist) else { throw NSFileProviderError(.filenameCollision) }
+                    return completionHandler(item(existing), [], false, nil)
+                }
+                if isFolder {
+                    try await client.createFolder(path)
+                } else if template.contentType == .symbolicLink || template.contentType == .aliasFile {
+                    throw NSFileProviderError(.noSuchItem)
+                } else {
+                    try await client.upload(path, from: url, modified: template.contentModificationDate ?? nil, progress: progress)
+                }
+                var resource = try await client.stat(path)
+                resource.isDirectory = resource.isDirectory || isFolder
+                completionHandler(item(resource), [], false, nil)
+            } catch DAVError.http(status: 405) where isFolder {
+                // MKCOL on something that appeared meanwhile.
+                completionHandler(nil, [], false, NSFileProviderError(.filenameCollision))
+            } catch {
+                completionHandler(nil, [], false, FileProviderErrors.map(error))
+            }
+        }
+    }
+
+    func modifyItem(_ item: NSFileProviderItem, baseVersion version: NSFileProviderItemVersion,
+                    changedFields: NSFileProviderItemFields, contents newContents: URL?,
+                    options: NSFileProviderModifyItemOptions = [], request: NSFileProviderRequest,
+                    completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
+    ) -> Progress {
+        run(Progress(totalUnitCount: 100)) { [self] progress in
+            guard var path = item.itemIdentifier.path, !path.isEmpty,
+                  let newParent = item.parentItemIdentifier.path else {
+                return completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
+            }
+            let isFolder = item.contentType == .folder
+            do {
+                let client = try client()
+                if changedFields.contains(.filename) || changedFields.contains(.parentItemIdentifier) {
+                    let newPath = Paths.join(newParent, item.filename)
+                    if newPath != path {
+                        // Servers disagree on the status for a taken name (412, 400...).
+                        if (try? await client.stat(newPath)) != nil {
+                            throw NSFileProviderError(.filenameCollision)
+                        }
+                        try await client.move(path, to: newPath, isDirectory: isFolder)
+                        path = newPath
+                    }
+                }
+                if changedFields.contains(.contents), !isFolder {
+                    try await client.upload(path, from: newContents, modified: item.contentModificationDate ?? nil, progress: progress)
+                }
+                var resource = try await client.stat(path)
+                resource.isDirectory = resource.isDirectory || isFolder
+                // Dates and other metadata can't be set over plain WebDAV; the
+                // server's values win.
+                completionHandler(self.item(resource), [], false, nil)
+            } catch DAVError.http(status: 412) {
+                completionHandler(nil, [], false, NSFileProviderError(.filenameCollision))
+            } catch {
+                completionHandler(nil, [], false, FileProviderErrors.map(error))
+            }
+        }
+    }
+
+    func deleteItem(identifier: NSFileProviderItemIdentifier, baseVersion version: NSFileProviderItemVersion,
+                    options: NSFileProviderDeleteItemOptions = [], request: NSFileProviderRequest,
+                    completionHandler: @escaping (Error?) -> Void) -> Progress {
+        run { [self] _ in
+            guard let path = identifier.path, !path.isEmpty else {
+                return completionHandler(NSFileProviderError(.noSuchItem))
+            }
+            do {
+                let client = try client()
+                let resource = try await client.stat(path)
+                try await client.delete(path, isDirectory: resource.isDirectory)
+                completionHandler(nil)
+            } catch DAVError.http(status: 404) {
+                completionHandler(nil) // already gone
+            } catch {
+                completionHandler(FileProviderErrors.map(error))
+            }
+        }
+    }
+
+    // MARK: Enumeration
+
+    func enumerator(for identifier: NSFileProviderItemIdentifier,
+                    request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
+        guard let path = identifier.path else { return EmptyEnumerator() }
+        return FolderEnumerator(path: path, client: try client(), rootName: rootName)
+    }
+}
+
+enum FileProviderErrors {
+    /// Maps errors to the File Provider errors the system knows how to handle.
+    static func map(_ error: Error) -> Error {
+        if error is NSFileProviderError || (error as NSError).domain == NSFileProviderErrorDomain { return error }
+        if error is CancellationError { return NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError) }
+        switch error {
+        case DAVError.http(let status):
+            switch status {
+            case 401, 403: return NSFileProviderError(.notAuthenticated)
+            case 404, 409: return NSFileProviderError(.noSuchItem)
+            case 507: return NSFileProviderError(.insufficientQuota)
+            default: return NSFileProviderError(.serverUnreachable)
+            }
+        case let error as URLError:
+            switch error.code {
+            case .cancelled: return NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError)
+            case .notConnectedToInternet, .networkConnectionLost: return NSFileProviderError(.cannotSynchronize)
+            case .userAuthenticationRequired: return NSFileProviderError(.notAuthenticated)
+            default: return NSFileProviderError(.serverUnreachable)
+            }
+        default:
+            return error
+        }
+    }
+}
