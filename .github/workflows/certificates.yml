@@ -1,6 +1,7 @@
 # Lists the team's signing certificates, or revokes the development
 # certificates earlier CI runs created ("Created via API") when the account
-# has hit Apple's certificate limit. Run by hand from the Actions tab.
+# has hit Apple's certificate limit, or shows the App IDs' capabilities and
+# profiles (signing). Run by hand from the Actions tab.
 name: Certificates
 
 on:
@@ -9,7 +10,7 @@ on:
       action:
         description: What to do
         type: choice
-        options: [list, revoke-ci-made]
+        options: [list, signing, revoke-ci-made]
         default: list
 
 permissions:

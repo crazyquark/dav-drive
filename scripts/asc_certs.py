@@ -9,6 +9,7 @@ Usage (env: ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8; pip install "pyjwt[crypto]"):
   asc_certs.py list                    list the team's certificates
   asc_certs.py snapshot <file>         save serials of the keychain's signing certificates
   asc_certs.py revoke-new <file>       revoke keychain certificates not in the snapshot
+  asc_certs.py signing                 show DAV Drive's App IDs, their capabilities and profiles
   asc_certs.py revoke-ci-made          revoke development certificates created via the API
                                        (by CI runs; never ones made in Xcode or xtool)
 """
@@ -95,6 +96,20 @@ def main():
         for cert in certificates():
             if norm(cert["attributes"]["serialNumber"]) in new:
                 revoke(cert)
+    elif command == "signing":
+        bundles = request("GET", "bundleIds", limit=200, **{"fields[bundleIds]": "identifier,name,platform"})
+        for bundle in bundles:
+            ident = bundle["attributes"]["identifier"]
+            if not ident.startswith("io.github.crazyquark.davdrive"):
+                continue
+            print(f"App ID {ident} ({bundle['attributes']['name']})")
+            for cap in request("GET", f"bundleIds/{bundle['id']}/bundleIdCapabilities") or []:
+                a = cap["attributes"]
+                print(f"  capability {a.get('capabilityType')} settings={json.dumps(a.get('settings'))}")
+            for prof in request("GET", f"bundleIds/{bundle['id']}/profiles",
+                                **{"fields[profiles]": "name,profileType,profileState,createdDate,expirationDate"}) or []:
+                a = prof["attributes"]
+                print(f"  profile '{a['name']}' {a['profileType']} {a['profileState']} created {a.get('createdDate','')[:16]}")
     elif command == "revoke-ci-made":
         found = False
         for cert in certificates():
