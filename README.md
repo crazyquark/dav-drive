@@ -36,6 +36,31 @@ sideload with a free Apple ID, the app uses two App IDs (the app and the
 extension) plus an app group. SideStore/AltStore rename the app group for your
 team, and the app reads the new name from `ALTAppGroups` in Info.plist.
 
+## App Store / TestFlight
+
+`.github/workflows/app-store.yml` builds with Xcode on a GitHub macOS runner
+(the project comes from `project.yml` via XcodeGen, see
+`scripts/xcode-prepare.sh`), signs with Xcode cloud signing and uploads to
+TestFlight. It runs on `v*` tags or by hand from the Actions tab. Without
+secrets it only checks that the app builds.
+
+One-time setup:
+
+1. In App Store Connect, create the app: bundle ID
+   `io.github.crazyquark.davdrive`, SKU of your choice. If the bundle ID isn't
+   listed yet, register it in the developer portal (Identifiers), or run the
+   workflow once with secrets: automatic signing registers both bundle IDs
+   and the app group.
+2. Add the secrets to the repo's `app-store` environment: `ASC_KEY_ID`,
+   `ASC_ISSUER_ID`, `ASC_KEY_P8` (an App Store Connect API key with the
+   **Admin** role) and `APPLE_TEAM_ID`.
+3. Run the workflow. Build numbers are `<CFBundleVersion>.<run number>`.
+   Check processing with the *Build status* workflow.
+
+The app and the extension share the version from `Config/App-Info.plist`.
+`Config/PrivacyInfo.xcprivacy` declares no tracking, no data collection,
+and the reasons for UserDefaults (app group) and file timestamp use.
+
 ## Testing the WebDAV client
 
 `DAVCore` builds on Linux too. The client was tested against wsgidav and

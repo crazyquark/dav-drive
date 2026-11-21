@@ -11,3 +11,7 @@ DerivedData/
 *.ipa
 /.bsp
 
+
+# Generated for Xcode builds (scripts/xcode-prepare.sh)
+/.xcode
+*.xcodeproj

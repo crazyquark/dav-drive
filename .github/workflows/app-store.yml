@@ -1,0 +1,94 @@
+# Builds DAV Drive with Xcode on a GitHub macOS runner, then archives it, signs
+# it with Xcode cloud signing and uploads it to App Store Connect / TestFlight.
+# Runs on every v* tag or by hand (Actions > App Store > Run workflow).
+# Without the App Store Connect secrets it only checks that the app builds.
+#
+# Secrets (Settings > Environments > app-store, or repository secrets):
+#   ASC_KEY_ID, ASC_ISSUER_ID  App Store Connect API key (Team Key, Admin role:
+#                              cloud-managed distribution signing needs Admin)
+#   ASC_KEY_P8                 contents of the AuthKey_XXXX.p8 file
+#   APPLE_TEAM_ID              your 10-character Apple Developer team ID
+#
+# Signing is automatic: on the first upload Xcode registers both bundle IDs
+# (the app and .DAVDriveFileProvider) and the app group
+# group.io.github.crazyquark.davdrive with Apple.
+name: App Store
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-store-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    # Add protection rules to this environment (e.g. required reviewers) to approve each upload.
+    environment: app-store
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check App Store Connect secrets
+        id: secrets
+        run: |
+          if [[ -n "$ASC_KEY_ID" && -n "$ASC_ISSUER_ID" && -n "$ASC_KEY_P8" && -n "$APPLE_TEAM_ID" ]]; then
+            echo "upload=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::App Store Connect secrets are not set, so this run only checks that the app builds."
+            echo "upload=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Select newest Xcode
+        run: |
+          xcode=$(ls -d /Applications/Xcode_*.app | grep -E '/Xcode_[0-9.]+\.app$' | sort -V | tail -1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          scripts/xcode-prepare.sh "${{ github.run_number }}"
+
+      - name: Build (no upload)
+        if: steps.secrets.outputs.upload != 'true'
+        run: >
+          xcodebuild build -quiet
+          -project DAVDrive.xcodeproj -scheme DAVDrive -configuration Release
+          -destination 'generic/platform=iOS'
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Archive and upload to TestFlight
+        if: steps.secrets.outputs.upload == 'true'
+        run: |
+          key="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          printf '%s\n' "$ASC_KEY_P8" > "$key"
+          trap 'rm -f "$key"' EXIT
+          auth=(-allowProvisioningUpdates
+                -authenticationKeyPath "$key"
+                -authenticationKeyID "$ASC_KEY_ID"
+                -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+
+          xcodebuild archive -quiet \
+            -project DAVDrive.xcodeproj -scheme DAVDrive -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/DAVDrive.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" "${auth[@]}"
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/DAVDrive.xcarchive" \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath "$RUNNER_TEMP/export" \
+            "${auth[@]}"
+          echo "::notice::Uploaded to App Store Connect. The build shows up in TestFlight after Apple finishes processing it (usually 5-30 minutes)."
