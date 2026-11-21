@@ -1,0 +1,34 @@
+# Lists the team's signing certificates, or revokes the development
+# certificates earlier CI runs created ("Created via API") when the account
+# has hit Apple's certificate limit. Run by hand from the Actions tab.
+name: Certificates
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do
+        type: choice
+        options: [list, revoke-ci-made]
+        default: list
+
+permissions:
+  contents: read
+
+jobs:
+  certificates:
+    runs-on: ubuntu-latest
+    environment: app-store
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet "pyjwt[crypto]"
+      - env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          python3 scripts/asc_certs.py "${{ inputs.action }}"
+          [[ "${{ inputs.action }}" == list ]] || python3 scripts/asc_certs.py list

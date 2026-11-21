@@ -69,6 +69,15 @@ jobs:
           -destination 'generic/platform=iOS'
           CODE_SIGNING_ALLOWED=NO
 
+      # Archiving creates a development certificate on every fresh runner;
+      # revoke it afterwards so runs don't use up the account's certificate limit.
+      - name: Snapshot signing certificates
+        if: steps.secrets.outputs.upload == 'true'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "pyjwt[crypto]"
+          "$RUNNER_TEMP/venv/bin/python" scripts/asc_certs.py snapshot "$RUNNER_TEMP/certs-before"
+
       - name: Archive and upload to TestFlight
         if: steps.secrets.outputs.upload == 'true'
         run: |
@@ -92,3 +101,7 @@ jobs:
             -exportPath "$RUNNER_TEMP/export" \
             "${auth[@]}"
           echo "::notice::Uploaded to App Store Connect. The build shows up in TestFlight after Apple finishes processing it (usually 5-30 minutes)."
+
+      - name: Revoke this run's certificates
+        if: always() && steps.secrets.outputs.upload == 'true'
+        run: '"$RUNNER_TEMP/venv/bin/python" scripts/asc_certs.py revoke-new "$RUNNER_TEMP/certs-before"'
