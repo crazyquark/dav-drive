@@ -59,7 +59,9 @@ public final class WebDAVClient: NSObject, URLSessionTaskDelegate, @unchecked Se
         self.allowsUntrustedCertificates = allowsUntrustedCertificates
         super.init()
         let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = 60
+        // An upper bound; requests carry their own timeout (URLRequest defaults to
+        // 60 s, slow folder operations ask for more).
+        configuration.timeoutIntervalForRequest = Self.slowOperationTimeout
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
@@ -129,16 +131,26 @@ public final class WebDAVClient: NSObject, URLSessionTaskDelegate, @unchecked Se
         try check(response)
     }
 
+    /// Folder operations can make a server walk or reindex the whole tree
+    /// before it answers (copyparty waits for a running rescan), so give them
+    /// longer than the 60 s other requests get.
+    static let slowOperationTimeout: TimeInterval = 300
+
     public func createFolder(_ path: String) async throws {
-        try await send(makeRequest("MKCOL", url(for: path, isDirectory: true)))
+        var request = makeRequest("MKCOL", url(for: path, isDirectory: true))
+        request.timeoutInterval = Self.slowOperationTimeout
+        try await send(request)
     }
 
     public func delete(_ path: String, isDirectory: Bool) async throws {
-        try await send(makeRequest("DELETE", url(for: path, isDirectory: isDirectory)))
+        var request = makeRequest("DELETE", url(for: path, isDirectory: isDirectory))
+        request.timeoutInterval = Self.slowOperationTimeout
+        try await send(request)
     }
 
     public func move(_ path: String, to newPath: String, isDirectory: Bool) async throws {
         var request = makeRequest("MOVE", url(for: path, isDirectory: isDirectory))
+        request.timeoutInterval = Self.slowOperationTimeout
         request.setValue(url(for: newPath, isDirectory: isDirectory).absoluteString, forHTTPHeaderField: "Destination")
         request.setValue("F", forHTTPHeaderField: "Overwrite")
         try await send(request)
